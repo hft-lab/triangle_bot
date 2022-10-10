@@ -25,21 +25,25 @@ class TriangleBot:
     _raw_updates = 0
     _group_updates = 0
 
+    profit = 0.001
     bot = ccxt.timex({})
     markets = bot.load_markets()
+
     pairs = set(markets)
     pairs.discard('TIMEV1/BTC')
     pairs.discard('TIMEV1/ETH')
     splited_pairs = {}
-    changes = {'USD': 1, 'USDT': 1, 'USDC': 1,}
+
+    changes = {'USD': 1, 'USDT': 1, 'USDC': 1}
+    start_time = time.time()
+    triangles_coins = []
+    coins = []
 
     def __init__(self, client: timex.WsClientTimex):
         self._my_orders = dict[str: timex.Order]
         self._client = client
         self.depth = 2
         client.on_first_connect = self.on_first_connect
-        # client.subscribe(timex.ETHAUDT, self.handle_update)
-        # client.subscribe(timex.BTCUSD, self.handle_update)
         client.subscribe_balances(self.handle_balance)
         client.subscribe_orders(self.handle_order)
         # client.subscribe_group_order_book(timex.ETHAUDT, self.handle_group_order_book_update)
@@ -66,13 +70,21 @@ class TriangleBot:
         # print(ob)
         # for orderbook in self._client.raw_order_books.values():
         #     print(f"Market: {orderbook.market} Len asks: {len(orderbook.asks)} Len bids: {len(orderbook.bids)}")
+        if not self._raw_updates % 100:
+            try:
+                self.find_all_triangles()
+            except:
+                return
         if not self._raw_updates % 5:
+            balance = self._client.balances
+            # print(balance)
             self.triangles_count()
             print(f"Triangle count ended")
-        # print(orderbooks['ETHAUDT']['asks'])
-        # print(orderbooks['ETHAUDT']['bids'])
+            # print(f"Total updates: {self._raw_updates}\nTime since started: {time.time() - self.start_time}")
+
 
     def on_first_connect(self):
+        self.find_all_triangles()
         self._client.create_orders([
             timex.NewOrder(
                 price=1.1,
@@ -109,18 +121,19 @@ class TriangleBot:
     def find_all_triangles(self):
         pairs = self.pairs
         orderbooks = self._client.raw_order_books
-        # coins = []
-        # for pair in data:
-        #     # pairs.append(data[pair]['id'])
-        #     coins.append(data[pair]['baseId'])
-        #     coins.append(data[pair]['quoteId'])
-        # coins = set(coins)
-        # coins.discard('TIMEV1')
-        triangles_coins = []
         triangle_sets = []
         for pair_1 in pairs:
+            spltd_pair_1 = self.splited_pairs[pair_1]
+            if not len(orderbooks[spltd_pair_1].bids) or not len(orderbooks[spltd_pair_1].asks):
+                continue
             for pair_2 in pairs:
+                spltd_pair_2 = self.splited_pairs[pair_2]
+                if not len(orderbooks[spltd_pair_2].bids) or not len(orderbooks[spltd_pair_2].asks):
+                    continue
                 for pair_3 in pairs:
+                    spltd_pair_3 = self.splited_pairs[pair_3]
+                    if not len(orderbooks[spltd_pair_3].bids) or not len(orderbooks[spltd_pair_3].asks):
+                        continue
                     if pair_1 == pair_2 or pair_1 == pair_3 or pair_2 == pair_3:
                         continue
                     all_coins = [pair_1.split('/')[0],
@@ -131,7 +144,6 @@ class TriangleBot:
                                  pair_3.split('/')[1]]
                     if 'COMP' in all_coins:
                         continue
-                    # map(['COMP'], lambda x: if x in all_coins continue)
                     flag = False
                     for coin in all_coins:
                         if all_coins.count(coin) != 2:
@@ -140,35 +152,47 @@ class TriangleBot:
                         flag = False
                         continue
                     if {pair_1, pair_2, pair_3} not in triangle_sets:
-                        # flag = False
-                        # for pair in {pair_1, pair_2, pair_3}:
-                        #     try:
-                        #         orderbooks[pair].bids
-                        #         orderbooks[pair].asks
-                        #     except Exception as e:
-                        #         # print(f"142: {e}")
-                        #         flag = True
-                        #         break
-                        # if flag:
-                        #     continue
                         triangle_sets.append({pair_1, pair_2, pair_3})
-                        triangles_coins.append({'coins': set(all_coins),
-                                                'pairs': [pair_1, pair_2, pair_3]})
+                        self.triangles_coins.append({'coins': set(all_coins), 'pairs': [pair_1, pair_2, pair_3]})
 
-        # print(triangle_sets)
+        self.define_pairs(triangle_sets)
+        self.define_coins()
+        self.sorting_triangles()
+
+    def define_pairs(self, triangle_sets):
         pairs = []
         for triangle in triangle_sets:
             for pair in triangle:
                 pairs.append(pair)
-        pairs = set(pairs)
-        # print(f"Total pairs: {len(pairs)}")
+        self.pairs = set(pairs)
 
+    def define_coins(self):
+        pairs = self.pairs
         coins = []
         for pair in pairs:
             coins.append(pair.split('/')[0])
             coins.append(pair.split('/')[1])
-        coins = set(coins)
-        return triangles_coins, pairs, coins
+        self.coins = set(coins)
+
+    def sorting_triangles(self):
+        new_triangles_coins = []
+        for triangle in self.triangles_coins:
+            for coin_1 in triangle['coins']:
+                for pair_1 in triangle['pairs']:
+                    for pair_2 in triangle['pairs']:
+                        for pair_3 in triangle['pairs']:
+                            if pair_1 == pair_2 or pair_1 == pair_3 or pair_2 == pair_3:
+                                continue
+                            if coin_1 in pair_1 and coin_1 in pair_3:
+                                if coin_1 == pair_1.split('/')[0]:
+                                    coin_2 = pair_1.split('/')[1]
+                                else:
+                                    coin_2 = pair_1.split('/')[0]
+                                coin_3 = [x for x in triangle['coins'] if x not in [coin_1, coin_2]][0]
+                                new_triangles_coins.update({'coins': [coin_1, coin_2, coin_3],
+                                                            'pairs': [pair_1, pair_2, pair_3]})
+
+        self.triangles_coins = new_triangles_coins
 
     def finding_audt_change_price(self):
         orderbooks = self._client.raw_order_books
@@ -179,10 +203,10 @@ class TriangleBot:
         change_AUDT = round((ethusd_price / ethaudt_price + btcusd_price / btcaudt_price) / 2, 3)
         self.changes.update({'AUDT': change_AUDT})
 
-    def changes_define(self, coins, pairs):
+    def changes_define(self):
         orderbooks = self._client.raw_order_books
         self.finding_audt_change_price()
-        for coin in coins:
+        for coin in self.coins:
             if 'USD' in coin:
                 continue
             if coin == 'AUDT':
@@ -198,232 +222,202 @@ class TriangleBot:
         # print(changes)
             # all_amounts.update({coin: balance['total'][coin] * changes[coin]})
 
+    def change_max_order_amount():
+        balance = fetch_balance()
+        all_coins = set(balance['total'])
+        convert_orderbooks = {'USDN': 1}
+        orderbooks = {}
+        all_amounts = {}
+        MAX_ORDER_AMOUNTS = []
+        for coin in all_coins:
+            if coin == 'USDN':
+                all_amounts.update({coin: balance['total']['USDN']})
+                continue
+            orderbooks.update({coin + '/USDN': my_fetch_order_book_waves(coin + '/USDN', 20)})
+            convert_orderbooks.update({coin: orderbooks[coin + '/USDN']['bids'][1][0]})
+            all_amounts.update({coin: balance['total'][coin] * convert_orderbooks[coin]})
+        for coin_1 in all_coins:
+            for coin_2 in all_coins:
+                amounts = []
+                if coin_1 == coin_2:
+                    continue
+                amounts.append(all_amounts[coin_1])
+                amounts.append(all_amounts[coin_2])
+                MAX_ORDER_AMOUNTS.append({'coins': [coin_1, coin_2], 'max_amount': round(min(amounts) * 0.99)})
+        if blocked_coins:
+            for block_coin in blocked_coins:
+                for max_amount in MAX_ORDER_AMOUNTS:
+                    if block_coin['coin'] in max_amount['coins']:
+                        max_amount['max_amount'] -= block_coin['amount']
+        return MAX_ORDER_AMOUNTS, convert_orderbooks, orderbooks
+
+
+    def defining_coins_chain(self, triangle):
+        orderbooks = self._client.raw_order_books
+        coin_1, coin_2, coin_3 = triangle['coins'][0], triangle['coins'][1], triangle['coins'][2]
+        pair_1, pair_2, pair_3 = triangle['pairs'][0], triangle['pairs'][1], triangle['pairs'][2]
+        coins_chain = {}
+        # Формирование первого главного коина в словаре
+        if coin_1 == pair_1.split('/')[0]:
+            coins_chain.update({'coin_1': {'coin': coin_1,
+                                           'pair': pair_1,
+                                           'side': 'sell',
+                                           'orderbook': orderbooks[self.splited_pairs[pair_1]].asks,
+                                           'price': self.changes[coin_1]}})
+        else:
+            coins_chain.update({'coin_1': {'coin': coin_1,
+                                           'pair': pair_1,
+                                           'side': 'buy',
+                                           'orderbook': orderbooks[self.splited_pairs[pair_1]].bids,
+                                           'price': self.changes[coin_1]}})
+        # Формирование 2 и 3 коина в словаре
+        for num, coin, pair in [(2, coin_2, pair_2), (3, coin_3, pair_3)]:
+            if coin == pair.split('/')[0]:
+                side = 'sell'
+                orderbook = orderbooks[self.splited_pairs[pair]].bids
+            else:
+                side = 'buy'
+                orderbook = orderbooks[self.splited_pairs[pair]].asks
+            coins_chain.update({'coin_' + str(num): {'coin': coin,
+                                                     'pair': pair,
+                                                     'side': side,
+                                                     'orderbook': orderbook}})
+        return coins_chain
+
+    def defining_depth_counts(self, coins_chain):
+        # просчет размеров лота в глубину
+        depth_count_2 = []
+        depth_count_3 = []
+        for position in range(self.depth):
+            try:
+                amount_2 = sum([coins_chain['coin_2']['orderbook'][x].volume for x in range(position + 1)])
+            except:
+                print(coins_chain['coin_2']['orderbook'])
+            usdAmount_2 = amount_2 * self.changes[coins_chain['coin_2']['pair'].split('/')[0]]
+            price_2 = coins_chain['coin_2']['orderbook'][position].price
+            depth_chain_2 = {'depth': position,
+                             'price': price_2,
+                             'amount': amount_2,
+                             'usdAmount': usdAmount_2}
+            depth_count_2.append(depth_chain_2)
+            amount_3 = sum([coins_chain['coin_3']['orderbook'][x].volume for x in range(position + 1)])
+            usdAmount_3 = amount_3 * self.changes[coins_chain['coin_3']['pair'].split('/')[0]]
+            price_3 = coins_chain['coin_3']['orderbook'][position].price
+            depth_chain_3 = {'depth': position,
+                             'price': price_3,
+                             'amount': amount_3,
+                             'usdAmount': usdAmount_3}
+            depth_count_3.append(depth_chain_3)
+        return depth_count_2, depth_count_3
+
     def triangles_count(self):
         print(f"Triangle count started")
-        orderbooks = self._client.raw_order_books
-        try:
-            triangles_coins, pairs, coins = self.find_all_triangles()
-            self.changes_define(coins, pairs)
-        except:
-            return
-        triangles = []
         time_start = time.time()
-        for triangle in triangles_coins:
-            for coin_1 in triangle['coins']:
-                for pair_1 in triangle['pairs']:
-                    if not len(orderbooks[self.splited_pairs[pair_1]].bids):
+        orderbooks = self._client.raw_order_books
+        self.changes_define()
+        order_amounts = None
+        triangles = []
+        for triangle in self.triangles_coins:
+            coins_chain = self.defining_coins_chain(triangle)
+            depth_count_2, depth_count_3 = self.defining_depth_counts(coins_chain)
+            for coin_2 in depth_count_2:
+                for coin_3 in depth_count_3:
+                    min_amount = min([coin_2['usdAmount'], coin_3['usdAmount']])
+                    if min_amount <= 0:
                         continue
-                    if not len(orderbooks[self.splited_pairs[pair_1]].asks):
-                        continue
-                    for pair_2 in triangle['pairs']:
-                        if not len(orderbooks[self.splited_pairs[pair_2]].bids):
+                    fee = min_amount * 0.005
+                    initial_amount = (min_amount + fee) / self.changes[coins_chain['coin_1']['coin']]
+                    end_amount = (1 + self.profit) * initial_amount
+                    if coins_chain['coin_2']['side'] == 'sell':
+                        convert_price_2 = coin_2['price']
+                    else:
+                        convert_price_2 = 1 / coin_2['price']
+                    if coins_chain['coin_3']['side'] == 'sell':
+                        convert_price_3 = coin_3['price']
+                    else:
+                        convert_price_3 = 1 / coin_3['price']
+                    # CONVERTATIONS
+                    if coins_chain['coin_3']['side'] == 'buy':
+                        amount_3 = end_amount
+                    else:
+                        amount_3 = end_amount / convert_price_3
+                    if coins_chain['coin_3']['side'] == 'buy':
+                        if coins_chain['coin_2']['side'] == 'buy':
+                            amount_2 = amount_3 / convert_price_3
+                        elif coins_chain['coin_2']['side'] == 'sell':
+                            amount_2 = amount_3 / convert_price_2 / convert_price_3
+                    if coins_chain['coin_3']['side'] == 'sell':
+                        if coins_chain['coin_2']['side'] == 'buy':
+                            amount_2 = amount_3
+                        elif coins_chain['coin_2']['side'] == 'sell':
+                            amount_2 = amount_3 / convert_price_2
+                    if coins_chain['coin_2']['side'] == 'buy':
+                        if coins_chain['coin_1']['side'] == 'buy':
+                            amount_1 = amount_2 / convert_price_2
+                            convert_price_1 = amount_1 / min_amount * self.changes[pair_1.split('/')[1]]
+                            main_price = 1 / convert_price_1
+                        elif coins_chain['coin_1']['side'] == 'sell':
+                            amount_1 = min_amount / self.changes[pair_1.split('/')[0]]
+                            # print(f"amount_2:{amount_2} amount_1:{amount_1} convert_price_2:{convert_price_2}")
+                            main_price = amount_2 / amount_1 / convert_price_2
+                    if coins_chain['coin_2']['side'] == 'sell':
+                        if coins_chain['coin_1']['side'] == 'buy':
+                            amount_1 = amount_2
+                            convert_price_1 = amount_1 / min_amount * self.changes[pair_1.split('/')[1]]
+                            main_price = 1 / convert_price_1
+                        elif coins_chain['coin_1']['side'] == 'sell':
+                            amount_1 = min_amount / self.changes[pair_1.split('/')[0]]
+                            main_price = amount_2 / amount_1
+                    if coins_chain['coin_1']['side'] == 'sell':
+                        splited_main_pair = self.splited_pairs[coins_chain['coin_1']['pair']]
+                        ask_price = orderbooks[splited_main_pair].asks[0].price
+                        bid_price = orderbooks[splited_main_pair].bids[0].price
+                        spread = (ask_price - bid_price) / bid_price * 100
+                        position = (ask_price - main_price) / (ask_price - bid_price) * 100
+                        # print(f"Main price: {main_price}\nTop ask price: {ask_price}")
+                        if main_price > coins_chain['coin_1']['orderbook'][0].price:
                             continue
-                        if not len(orderbooks[self.splited_pairs[pair_2]].asks):
+                    else:
+                        splited_main_pair = self.splited_pairs[coins_chain['coin_1']['pair']]
+                        ask_price = orderbooks[splited_main_pair].asks[0].price
+                        bid_price = orderbooks[splited_main_pair].bids[0].price
+                        spread = (ask_price - bid_price) / ask_price * 100
+                        position = (main_price - bid_price) / (ask_price - bid_price) * 100
+                        # print(f"Main price: {main_price}\nTop bid price: {bid_price}")
+                        if main_price < coins_chain['coin_1']['orderbook'][0].price:
                             continue
-                        for pair_3 in triangle['pairs']:
-                            if not len(orderbooks[self.splited_pairs[pair_3]].bids):
-                                continue
-                            if not len(orderbooks[self.splited_pairs[pair_3]].asks):
-                                continue
-                            if pair_1 == pair_2 or pair_1 == pair_3 or pair_2 == pair_3:
-                                continue
-                            # if triangle['pairs'] not in working_triangles:
-                            #     working_triangles.append(triangle['pairs'])
-                            if coin_1 in pair_1 and coin_1 in pair_3:
-                                coins_chain = {}
-                                # Формирование первого главного коина в словаре
-                                if coin_1 == pair_1.split('/')[0]:
-                                    coins_chain.update({'coin_1': {'coin': coin_1,
-                                                                   'pair': pair_1,
-                                                                   'side': 'sell',
-                                                                   'orderbook_side': 'asks',
-                                                                   'orderbook': orderbooks[self.splited_pairs[pair_1]].asks,
-                                                                   'price': orderbooks[self.splited_pairs[pair_1]].asks[0].price}})
-                                    coin_2 = pair_1.split('/')[1]
-                                else:
-                                    coins_chain.update({'coin_1': {'coin': coin_1,
-                                                                   'pair': pair_1,
-                                                                   'side': 'buy',
-                                                                   'orderbook_side': 'bids',
-                                                                   'orderbook': orderbooks[self.splited_pairs[pair_1]].bids,
-                                                                   'price': orderbooks[self.splited_pairs[pair_1]].bids[0].price}})
-                                    coin_2 = pair_1.split('/')[0]
-                                coin_3 = [x for x in triangle['coins'] if x not in [coin_1, coin_2]][0]
-                                # MAX_ORDER_AMOUNT = [x['max_amount'] for x in MAX_ORDER_AMOUNTS if coin_1 in x['coins']
-                                # and coin_3 in x['coins']][0]
-                                # Формирование 2 и 3 коина в словаре
-                                for num, coin, pair in [(2, coin_2, pair_2), (3, coin_3, pair_3)]:
-                                    if coin == pair.split('/')[0]:
-                                        side, orderbook_side = 'sell', 'bids'
-                                        orderbook = orderbooks[self.splited_pairs[pair]].bids
-                                    else:
-                                        side, orderbook_side = 'buy', 'asks'
-                                        orderbook = orderbooks[self.splited_pairs[pair]].asks
-                                    coins_chain.update({'coin_' + str(num): {'coin': coin,
-                                                                             'pair': pair,
-                                                                             'side': side,
-                                                                             'orderbook_side': orderbook_side,
-                                                                             'orderbook': orderbook}})
-                                # просчет размеров лота в глубину
-                                depth_count_2 = []
-                                depth_count_3 = []
-
-                                for position in range(self.depth):
-                                    # try:
-                                    position = 0
-                                    amount = sum([coins_chain['coin_2']['orderbook'][x].volume for x in range(position + 1)])
-                                    # [coins_chain['coin_' + str(2)]['orderbook'][x].volume for x in range(position) if
-                                    #  coins_chain['coin_' + str(2)]['orderbook'][x].volume not in last_orders_amounts])
-                                    usdAmount = amount * self.changes[coins_chain['coin_2']['pair'].split('/')[0]]
-                                    price = coins_chain['coin_2']['orderbook'][position].price
-                                    # except:
-                                    #     break
-                                    # if price in last_orders_prices or amount == 0:
-                                    # continue
-                                    depth_chain = {'depth': position,
-                                                   'price': price,
-                                                   'amount': amount,
-                                                   'usdAmount': usdAmount}
-                                    # depth_chain['usdAmount'] = MAX_ORDER_AMOUNT if depth_chain['usdAmount'] >
-                                    # MAX_ORDER_AMOUNT else depth_chain['usdAmount']
-                                    # depth_chain['usdAmount'] = depth_chain['usdAmount']
-                                    depth_count_2.append(depth_chain)
-                                    # if depth_chain['usdAmount'] == MAX_ORDER_AMOUNT:
-                                    #     if position != depth - 1:
-                                    #         break
-
-                                for position in range(self.depth):
-                                    # try:
-                                    position = 0
-                                    amount = sum([coins_chain['coin_3']['orderbook'][x].volume for x in range(position + 1)])
-                                    # coins_chain['coin_' + str(3)]['orderbook'][x].volume not in last_orders_amounts])
-                                    usdAmount = amount * self.changes[coins_chain['coin_3']['pair'].split('/')[0]]
-                                    # usdAmount = sum([coins_chain['coin_' + str(3)]['orderbook'][x].volume for x in
-                                    # range(position) if coins_chain['coin_' + str(3)]['orderbook'][x].volume not in last_
-                                    # orders_amounts]) * changes[coins_chain['coin_' + str(3)]['pair'].split('/')[0]]
-                                    price = coins_chain['coin_3']['orderbook'][position].price
-                                    # except:
-                                    #     break
-                                    # if price in last_orders_prices or amount == 0:
-                                    #     continue
-                                    depth_chain = {'depth': position,
-                                                   'price': price,
-                                                   'amount': amount,
-                                                   'usdAmount': usdAmount}
-                                    # depth_chain['usdAmount'] = MAX_ORDER_AMOUNT if depth_chain['usdAmount'] >
-                                    # MAX_ORDER_AMOUNT else depth_chain['usdAmount']
-                                    # depth_chain['usdAmount'] = depth_chain['usdAmount']
-                                    depth_count_3.append(depth_chain)
-                                    # if depth_chain['usdAmount'] == MAX_ORDER_AMOUNT:
-                                    #     if position != depth - 1:
-                                    #         break
-
-                                for coin_2 in depth_count_2:
-                                    for coin_3 in depth_count_3:
-                                        min_amount = min([coin_2['usdAmount'], coin_3['usdAmount']])
-                                        # if coin_2['usdAmount'] < coin_3['usdAmount']:
-                                        #     min_amount = coin_2['usdAmount']
-                                        # else:
-                                        #     min_amount = coin_3['usdAmount']
-                                        if min_amount <= 0:
-                                            print(f"MIN AMOUNT LESS THAN 0: {min_amount}")
-                                            continue
-                                        fee = min_amount * 0.004
-                                        initial_amount = (min_amount + fee) / self.changes[coins_chain['coin_1']['coin']]
-
-                                        # profit = random.choice([x * 0.0005 for x in range(2, 11)])
-                                        profit = 0.001
-                                        end_amount = (1 + profit) * initial_amount
-                                        if coins_chain['coin_2']['side'] == 'sell':
-                                            convert_price_2 = coin_2['price']
-                                        else:
-                                            convert_price_2 = 1 / coin_2['price']
-                                        if coins_chain['coin_3']['side'] == 'sell':
-                                            convert_price_3 = coin_3['price']
-                                        else:
-                                            convert_price_3 = 1 / coin_3['price']
-                                        # CONVERTATIONS
-                                        if coins_chain['coin_3']['side'] == 'buy':
-                                            amount_3 = end_amount
-                                        else:
-                                            amount_3 = end_amount / convert_price_3
-                                        if coins_chain['coin_3']['side'] == 'buy':
-                                            if coins_chain['coin_2']['side'] == 'buy':
-                                                amount_2 = amount_3 / convert_price_3
-                                            elif coins_chain['coin_2']['side'] == 'sell':
-                                                amount_2 = amount_3 / convert_price_2 / convert_price_3
-                                        if coins_chain['coin_3']['side'] == 'sell':
-                                            if coins_chain['coin_2']['side'] == 'buy':
-                                                amount_2 = amount_3
-                                            elif coins_chain['coin_2']['side'] == 'sell':
-                                                amount_2 = amount_3 / convert_price_2
-                                        if coins_chain['coin_2']['side'] == 'buy':
-                                            if coins_chain['coin_1']['side'] == 'buy':
-                                                amount_1 = amount_2 / convert_price_2
-                                                convert_price_1 = amount_1 / min_amount * self.changes[pair_1.split('/')[1]]
-                                                main_price = 1 / convert_price_1
-                                            elif coins_chain['coin_1']['side'] == 'sell':
-                                                amount_1 = min_amount / self.changes[pair_1.split('/')[0]]
-                                                # print(f"amount_2:{amount_2} amount_1:{amount_1} convert_price_2:{convert_price_2}")
-                                                main_price = amount_2 / amount_1 / convert_price_2
-                                        if coins_chain['coin_2']['side'] == 'sell':
-                                            if coins_chain['coin_1']['side'] == 'buy':
-                                                amount_1 = amount_2
-                                                convert_price_1 = amount_1 / min_amount * self.changes[pair_1.split('/')[1]]
-                                                main_price = 1 / convert_price_1
-                                            elif coins_chain['coin_1']['side'] == 'sell':
-                                                amount_1 = min_amount / self.changes[pair_1.split('/')[0]]
-                                                main_price = amount_2 / amount_1
-                                        if coins_chain['coin_1']['side'] == 'sell':
-                                            splited_main_pair = self.splited_pairs[coins_chain['coin_1']['pair']]
-                                            ask_price = orderbooks[splited_main_pair].asks[0].price
-                                            bid_price = orderbooks[splited_main_pair].bids[0].price
-                                            spread = (ask_price - bid_price) / bid_price * 100
-                                            position = (ask_price - main_price) / (ask_price - bid_price) * 100
-                                            # print(f"Main price: {main_price}\nTop ask price: {ask_price}")
-                                            if main_price > coins_chain['coin_1']['orderbook'][0].price:
-                                                continue
-                                        else:
-                                            splited_main_pair = self.splited_pairs[coins_chain['coin_1']['pair']]
-                                            ask_price = orderbooks[splited_main_pair].asks[0].price
-                                            bid_price = orderbooks[splited_main_pair].bids[0].price
-                                            spread = (ask_price - bid_price) / ask_price * 100
-                                            position = (main_price - bid_price) / (ask_price - bid_price) * 100
-                                            # print(f"Main price: {main_price}\nTop bid price: {bid_price}")
-                                            if main_price < coins_chain['coin_1']['orderbook'][0].price:
-                                                continue
-                                        profit_abs = (end_amount - initial_amount) * self.changes[coins_chain['coin_1']['coin']]
-                                        # print(f"Profit abs: {profit_abs}\nTriangle: {[pair_1, pair_2, pair_3]}")
-                                        # print(f"Position in spread: {position}%")
-                                        # print()
-                                        # if coin_3 == profit_abs_last['coin']:
-                                        #     if profit_abs < profit_abs_last['profit_abs']:
-                                        #         if coin_3 != depth_count_3[-1]:
-                                        #             break
-                                        # profit_abs_last = {'coin': coin_3, 'profit_abs': profit_abs}
-                                        if profit_abs >= 0:
-                                            # price_len = self.markets[coins_chain['coin_1']['pair']]['precision']['price']
-                                            # amount_len = self.markets[coins_chain['coin_1']['pair']]['precision']['amount']
-                                            order_chain = [{'pair': coins_chain['coin_1']['pair'],
-                                                            'side': coins_chain['coin_1']['side'],
-                                                            'amount': amount_1,
-                                                            'price': main_price,
-                                                            'spread': spread,
-                                                            'position': position,
-                                                            'main_coin': coin_1,
-                                                            'last_coin': coin_3,
-                                                            'changes': self.changes},
-                                                           {'pair': coins_chain['coin_2']['pair'],
-                                                            'side': coins_chain['coin_2']['side'],
-                                                            'amount': amount_2,
-                                                            'price': coin_2['price'],
-                                                            'depth': coin_2['depth']},
-                                                           {'pair': coins_chain['coin_3']['pair'],
-                                                            'side': coins_chain['coin_3']['side'],
-                                                            'amount': amount_3,
-                                                            'price': coin_3['price'],
-                                                            "depth": coin_3['depth']}]
-                                            triangles.append([order_chain, profit_abs])
+                    profit_abs = (end_amount - initial_amount) * self.changes[coins_chain['coin_1']['coin']]
+                    # print(f"Profit abs: {profit_abs}\nTriangle: {[pair_1, pair_2, pair_3]}")
+                    # print(f"Position in spread: {position}%")
+                    # print()
+                    # if coin_3 == profit_abs_last['coin']:
+                    #     if profit_abs < profit_abs_last['profit_abs']:
+                    #         if coin_3 != depth_count_3[-1]:
+                    #             break
+                    # profit_abs_last = {'coin': coin_3, 'profit_abs': profit_abs}
+                    if profit_abs >= 0:
+                        # price_len = self.markets[coins_chain['coin_1']['pair']]['precision']['price']
+                        # amount_len = self.markets[coins_chain['coin_1']['pair']]['precision']['amount']
+                        order_chain = [{'pair': coins_chain['coin_1']['pair'],
+                                        'side': coins_chain['coin_1']['side'],
+                                        'amount': amount_1,
+                                        'price': main_price,
+                                        'spread': spread,
+                                        'position': position,
+                                        'main_coin': coin_1,
+                                        'last_coin': coin_3,
+                                        'changes': self.changes},
+                                       {'pair': coins_chain['coin_2']['pair'],
+                                        'side': coins_chain['coin_2']['side'],
+                                        'amount': amount_2,
+                                        'price': coin_2['price'],
+                                        'depth': coin_2['depth']},
+                                       {'pair': coins_chain['coin_3']['pair'],
+                                        'side': coins_chain['coin_3']['side'],
+                                        'amount': amount_3,
+                                        'price': coin_3['price'],
+                                        "depth": coin_3['depth']}]
+                        triangles.append([order_chain, profit_abs])
         # print(f"All triangles: {working_triangles}")
         # print(f"Number of triangles: {len(working_triangles)}")
         # coins = []
