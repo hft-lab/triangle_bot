@@ -6,8 +6,13 @@ import uuid
 import ccxt
 import time
 import random
+import telebot
+from DataBase import triangle_database
+import random
+import string
 
 import py_timex.client as timex
+
 
 cp = configparser.ConfigParser()
 
@@ -25,8 +30,11 @@ class TriangleBot:
     _raw_updates = 0
     _group_updates = 0
 
+    chat_id = cp["TELEGRAM"]["chat_id"]
+    telegram_bot = telebot.TeleBot(cp["TELEGRAM"]["token"])
     bot = ccxt.timex({})
     markets = bot.load_markets()
+    dataBase = triangle_database(telegram_bot, chat_id)
 
     pairs = set(markets)
     pairs.discard('TIMEV1/BTC')
@@ -42,6 +50,7 @@ class TriangleBot:
 
 
     def __init__(self, client: timex.WsClientTimex):
+        self.session_id = self.id_generator(size=6)
         self._my_orders = dict[str: timex.Order]
         self._client = client
         self.depth = 5
@@ -53,7 +62,8 @@ class TriangleBot:
             self.splited_pairs.update({pair: pair.split('/')[0] + pair.split('/')[1]})
             client.subscribe_raw_order_book(self.splited_pairs[pair], self.handle_raw_order_book_update)
 
-
+    def id_generator(self, size, chars=string.ascii_uppercase + string.digits):
+        return ''.join(random.choice(chars) for _ in range(size))
     # def handle_group_order_book_update(self, ob: timex.OrderBook):
     #     self._group_updates += 1
     #     # log.info("group: updates: %d, asks: %d, bids: %d",
@@ -74,8 +84,17 @@ class TriangleBot:
         # print(ob)
         # for orderbook in self._client.raw_order_books.values():
         #     print(f"Market: {orderbook.market} Len asks: {len(orderbook.asks)} Len bids: {len(orderbook.bids)}")
-        if self._raw_updates > 96:
+        if self._raw_updates == 198:
+            self.define_coins()
+            self.changes_defining()
+            balances = self._client.balances
+            changes = self.changes
+            self.dataBase.sql_balances_update(balances, changes, self.session_id)
+
+        if self._raw_updates > 199:
             if not self._raw_updates % 100:
+                database_data = self.dataBase.fetch_data_from_table('balances')
+                print(database_data)
                 self.find_all_triangles()
             if not self._raw_updates % 5:
                 self.triangles_count()
@@ -160,8 +179,9 @@ class TriangleBot:
                         continue
                     if {pair_1, pair_2, pair_3} not in triangle_sets:
                         triangle_sets.append({pair_1, pair_2, pair_3})
-                        triangles_coins.append({'coins': set(all_coins), 'pairs': [pair_1, pair_2, pair_3]})
-                        triangles_coins['coins'] = list(triangles_coins['coins'])
+                        triangles_coins.append({'coins': list(set(all_coins)),
+                                                'pairs': [pair_1, pair_2, pair_3],
+                                                'max_order_amount': 0})
         self.triangles_coins = triangles_coins
         self.define_pairs(triangle_sets)
         self.define_coins()
@@ -177,12 +197,12 @@ class TriangleBot:
 
 
     def define_coins(self):
-        pairs = self.pairs
+        balances = self._client.balances
         coins = []
-        for pair in pairs:
-            coins.append(pair.split('/')[0])
-            coins.append(pair.split('/')[1])
-        self.coins = set(coins)
+        for balance in balances.values():
+            if balance.total_balance != '0':
+                coins.append(balance.currency)
+        self.coins = coins
 
 
     def sorting_triangles(self):
@@ -201,21 +221,22 @@ class TriangleBot:
                                 else:
                                     coin_2 = pair_1.split('/')[0]
                                 coin_3 = [x for x in triangle['coins'] if x not in [coin_1, coin_2]][0]
-                                if balance.coin_1.total_balance != '0':
-                                    if balance.coin_2.total_balance != '0':
-                                        if balance.coin_3.total_balance != '0':
+                                if balance[coin_1].total_balance != '0':
+                                    if balance[coin_2].total_balance != '0':
+                                        if balance[coin_3].total_balance != '0':
                                             max_order_amount = self.define_max_order_amount(coin_1, coin_2, coin_3)
                                             new_triangles_coins.append({'coins': [coin_1, coin_2, coin_3],
                                                                         'pairs': [pair_1, pair_2, pair_3],
-                                                                        'order_amount': max_order_amount})
+                                                                        'max_order_amount': max_order_amount})
         self.triangles_coins = new_triangles_coins
 
 
     def define_max_order_amount(self, coin_1, coin_2, coin_3):
         balance = self._client.balances
-        coin1usdAmount = float(balance.coin_1.total_balance) * changes[coin_1]
-        coin2usdAmount = float(balance.coin_2.total_balance) * changes[coin_2]
-        coin3usdAmount = float(balance.coin_3.total_balance) * changes[coin_3]
+        changes = self.changes
+        coin1usdAmount = float(balance[coin_1].total_balance) * changes[coin_1]
+        coin2usdAmount = float(balance[coin_2].total_balance) * changes[coin_2]
+        coin3usdAmount = float(balance[coin_3].total_balance) * changes[coin_3]
         return min(coin1usdAmount, coin2usdAmount, coin3usdAmount) / 2
 
 
@@ -224,7 +245,7 @@ class TriangleBot:
             change = (orderbooks[pair].bids[0].price + orderbooks[pair].asks[0].price) / 2
             return change
         else:
-            self._client = client
+            client = self._client
             client.subscribe_raw_order_book(pair, self.handle_raw_order_book_update)
             return None
 
@@ -420,8 +441,9 @@ class TriangleBot:
         print(f'Total triangles found: {len(triangles)}')
 
 
-    def check_balance(self, balancing = False, project_start_balance = None):
+    def check_balance(self, balancing = False):
         balance = self._client.balances
+        self.dataBase.sql_balances_update(balance, self.changes)
         if not amounts_start:
             amounts_start = amounts
         final_message, now_balance, total_start_balance, bot_start_balance = start_balance_message(amounts_start, orderbooks, coins, balance)

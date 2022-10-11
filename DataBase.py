@@ -1,4 +1,5 @@
 import sqlite3
+import datetime
 
 class triangle_database:
 
@@ -9,10 +10,55 @@ class triangle_database:
         self.connect = sqlite3.connect('deals.db')
         self.sql_create_orders_table()
         self.sql_create_partial_orders_table()
+        self.sql_create_balances_table()
+
+    def sql_create_balances_table(self):
+        cursor = self.connect.cursor()
+        cursor.execute("""CREATE TABLE IF NOT EXISTS balances (
+        datetime TIMESTAMP,
+        session_id TEXT,
+        coins TEXT,
+        balances TEXT,
+        usdBalances TEXT,
+        totalUsdValue REAL
+        );""")
+        self.connect.commit()
+        cursor.close()
+
+    def sql_balances_update(self, balances, changes, session_id):
+        cursor = self.connect.cursor()
+        coins = ''
+        amounts = ''
+        usd_amounts = ''
+        total_usd_amount = 0
+        for balance in balances.values():
+            if balance.total_balance != '0':
+                coins += f'{balance.currency}/'
+                amounts += f'{balance.total_balance}/'
+                usd_amounts += f'{round(float(balance.total_balance) * changes[balance.currency])}/'
+                total_usd_amount += float(balance.total_balance) * changes[balance.currency]
+        sql = f"""INSERT INTO balances (
+        datetime,
+        session_id,
+        coins,
+        balances,
+        usdBalances,
+        totalUsdValue)
+        VALUES ('{datetime.datetime.now()}',
+        '{session_id}',
+        '{coins}', 
+        '{amounts}',
+        '{usd_amounts}',
+        {round(total_usd_amount)})"""
+        try:
+            cursor.execute(sql)
+        except Exception as e:
+            telegram_bot.send_message(chat_id, f"DB error {e}\nData {sql}")
+        cursor.close()
 
     def sql_create_orders_table(self):
         cursor = self.connect.cursor()
-        cursor.execute("""CREATE TABLE IF NOT EXISTS profit_deals (
+        cursor.execute("""CREATE TABLE IF NOT EXISTS deals (
         order_num INTEGER PRIMARY KEY AUTOINCREMENT,
         order_place_date TEXT,
         order_execute_date TEXT,
@@ -94,7 +140,7 @@ class triangle_database:
 
     def base_update(self, to_base):
         cursor = self.connect.cursor()
-        sql = f"""INSERT INTO profit_deals (
+        sql = f"""INSERT INTO deals (
         order_place_date,
         order_execute_date,
         triangle,
@@ -161,9 +207,8 @@ class triangle_database:
         {to_base["order_hang_time"]}
         )"""
         try:
-            cursor.execute(rf"{sql}")
+            cursor.execute(sql)
         except Exception as e:
-            pass
             telegram_bot.send_message(chat_id, f"DB error {e}\nData {sql}")
         self.connect.commit()
         cursor.close()
@@ -235,10 +280,19 @@ class triangle_database:
         try:
             cursor.execute(rf"{sql}")
         except Exception as e:
-            pass
             self.telegram_bot.send_message(self.chat_id, f"DB partial error {e}\nData {sql}")
         self.connect.commit()
         cursor.close()
 
+    def fetch_data_from_table(self, table):
+        if not table in ['partial_deals', 'deals', 'balances']:
+            raise Exception('Have only tables: partial_deals, deals, balances')
+        cursor = self.connect.cursor()
+        data = cursor.execute(f"SELECT * FROM {table};").fetchall()
+        cursor.close()
+        return data
+
+
     def close_connection(self):
         self.connect.close()
+
