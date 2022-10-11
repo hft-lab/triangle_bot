@@ -420,8 +420,8 @@ class TriangleBot:
         print(f'Total triangles found: {len(triangles)}')
 
 
-    def check_balance(amounts_start = None, balancing = False, pairs = None, project_start_balance = None):
-        balance = fetch_balance()
+    def check_balance(self, balancing = False, project_start_balance = None):
+        balance = self._client.balances
         if not amounts_start:
             amounts_start = amounts
         final_message, now_balance, total_start_balance, bot_start_balance = start_balance_message(amounts_start, orderbooks, coins, balance)
@@ -444,6 +444,47 @@ class TriangleBot:
             return blocked_coins
         else:
             return [amounts, round(now_balance - total_start_balance, 2)]
+
+    def start_balance_message(amounts_start, orderbooks, coins, balance):
+        amounts_total_start = {'WAVES': 219.32983894,
+                                'USDN': 1929.357886,
+                                'BTC': 0.0338665,
+                                'USDT': 0,
+                                'LTC': 0,
+                                'ETH': 0}
+        message_now = f'Current\n'
+        message_start = f'Start\n'
+        now_balance = 0
+        total_start_balance = 0
+        bot_start_balance = 0
+        for coin in coins:
+            string_len = 6 - len(coin)
+            if coin == 'USDN':
+                now_balance += balance['total'][coin]
+                total_start_balance += amounts_total_start[coin]
+                bot_start_balance += amounts_start[coin]
+                start_len = 11 - len(str(round(amounts_start[coin], 6)))
+                total_len = 11 - len(str(round(balance['total'][coin], 6)))
+                message_start += f"{coin}" + ' ' * string_len + f"{round(amounts_start[coin], 6)}" + ' ' * start_len + f"({round(amounts_start[coin], 2)})\n"
+                message_now += f"{coin}" + ' ' * string_len + f"{round(balance['total'][coin], 6)}" + ' ' * total_len + f"({round(balance['total'][coin], 2)})\n"
+                continue
+            now_balance += balance['total'][coin] * orderbooks[coin]
+            total_start_balance += amounts_total_start[coin] * orderbooks[coin]
+            bot_start_balance += amounts_start[coin] * orderbooks[coin]
+            start_len = 11 - len(str(round(amounts_start[coin], 6)))
+            total_len = 11 - len(str(round(balance['total'][coin], 6)))
+            message_start += f"{coin}" + ' ' * string_len + f"{round(amounts_start[coin], 6)}" + ' ' * start_len + f"({round(amounts_start[coin] * orderbooks[coin], 2)})\n"
+            message_now += f"{coin}" + ' ' * string_len + f"{round(balance['total'][coin], 6)}" + ' ' * total_len + f"({round(balance['total'][coin] * orderbooks[coin], 2)})\n"
+        message_start += 8 * '- ' + ' ' + f"{round(bot_start_balance, 2)}"
+        len_now = 15 - len(f'Project: {round(bot_start_balance - total_start_balance, 2)}')
+        message_start += f'\nProject: {round(bot_start_balance - total_start_balance, 2)}' + ' ' * len_now + f'({round((bot_start_balance - total_start_balance) / total_start_balance * 100, 2)}%)'
+        message_start += f"\nProject delta: {round((now_balance - total_start_balance) - (bot_start_balance - total_start_balance), 2)}\n"
+        len_now = 15 - len(f'Project: {round(now_balance - total_start_balance, 2)}')
+        message_now += 8 * '- ' + ' ' + f"{round(now_balance, 2)}\n"
+        message_now += f'Project: {round(now_balance - total_start_balance, 2)}' + ' ' * len_now + f'({round((now_balance - total_start_balance) / total_start_balance * 100, 2)}%)\n\n'
+
+        message = message_now + message_start
+        return message, now_balance, total_start_balance, bot_start_balance
 
 timex_client = timex.WsClientTimex(cp["TIMEX"]["api_key"], cp["TIMEX"]["api_secret"])
 bot = TriangleBot(timex_client)
