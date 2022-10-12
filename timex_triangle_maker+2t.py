@@ -45,6 +45,8 @@ class TriangleBot:
 
     profit = 0.001
     changes = {'USD': 1, 'USDT': 1, 'USDC': 1}
+    amounts_session_start = None
+    amounts_total_start = None
 
     start_time = time.time()
 
@@ -64,6 +66,7 @@ class TriangleBot:
 
     def id_generator(self, size, chars=string.ascii_uppercase + string.digits):
         return ''.join(random.choice(chars) for _ in range(size))
+
     # def handle_group_order_book_update(self, ob: timex.OrderBook):
     #     self._group_updates += 1
     #     # log.info("group: updates: %d, asks: %d, bids: %d",
@@ -90,11 +93,10 @@ class TriangleBot:
             balances = self._client.balances
             changes = self.changes
             self.dataBase.sql_balances_update(balances, changes, self.session_id)
+            self.check_balance()
 
         if self._raw_updates > 199:
             if not self._raw_updates % 100:
-                database_data = self.dataBase.fetch_data_from_table('balances')
-                print(database_data)
                 self.find_all_triangles()
             if not self._raw_updates % 5:
                 self.triangles_count()
@@ -441,72 +443,111 @@ class TriangleBot:
         print(f'Total triangles found: {len(triangles)}')
 
 
-    def check_balance(self, balancing = False):
-        balance = self._client.balances
-        self.dataBase.sql_balances_update(balance, self.changes)
-        if not amounts_start:
-            amounts_start = amounts
-        final_message, now_balance, total_start_balance, bot_start_balance = start_balance_message(amounts_start, orderbooks, coins, balance)
-        len_session = 15 - len(f'Session: {round(now_balance - bot_start_balance, 2)}')
-        # len_now = 15 - len(f'Project: {round(now_balance - total_start_balance, 2)}')
-        final_message += f'\nProfit (USDN)\nSession: {round(now_balance - bot_start_balance, 2)}' + ' ' * len_session +  f'({round((now_balance - bot_start_balance) / bot_start_balance * 100, 2)}%)\n'
-        # final_message += f'Project: {round(now_balance - total_start_balance, 2)}' + ' ' * len_now + f'({round((now_balance - total_start_balance) / total_start_balance * 100, 2)}%)\n'
-        if project_start_balance:
-            final_message += f"Prj chg: {round(now_balance - total_start_balance - project_start_balance, 2)}({round((now_balance - total_start_balance - project_start_balance) / (now_balance - total_start_balance) * 100, 4)}%)"
-        if balancing:
-            blocked_coins = autobalance(coins, amounts, orderbooks, pairs)
-        # message = find_open_orders()
-        # final_message += message
-        if not balancing:
-            try:
-                telegram_bot.send_message(chat_id, '<pre>' + final_message + '</pre>', parse_mode = 'HTML')
-            except:
-                telegram_bot.send_message(chat_id, '<pre>' + final_message + '</pre>', parse_mode = 'HTML')
-        if balancing:
-            return blocked_coins
-        else:
-            return [amounts, round(now_balance - total_start_balance, 2)]
+    def count_start_sum(self, amounts_start):
+        changes = self.changes
+        coins = [x for x in amounts_start['coins'].split('/') if x != '']
+        balances = [x for x in amounts_start['balances'].split('/') if x != '']
+        sum_if_no_trades = 0
+        for coin, balance in zip(coins, balances):
+            sum_if_no_trades += float(balance) * changes[coin]
+            amounts_start.update({coin: balance})
+        amounts_start.update({'conditTotalUsdBalance': round(sum_if_no_trades)})
+        return amounts_start
 
-    def start_balance_message(amounts_start, orderbooks, coins, balance):
-        amounts_total_start = {'WAVES': 219.32983894,
-                                'USDN': 1929.357886,
-                                'BTC': 0.0338665,
-                                'USDT': 0,
-                                'LTC': 0,
-                                'ETH': 0}
-        message_now = f'Current\n'
-        message_start = f'Start\n'
-        now_balance = 0
-        total_start_balance = 0
-        bot_start_balance = 0
-        for coin in coins:
-            string_len = 6 - len(coin)
-            if coin == 'USDN':
-                now_balance += balance['total'][coin]
-                total_start_balance += amounts_total_start[coin]
-                bot_start_balance += amounts_start[coin]
-                start_len = 11 - len(str(round(amounts_start[coin], 6)))
-                total_len = 11 - len(str(round(balance['total'][coin], 6)))
-                message_start += f"{coin}" + ' ' * string_len + f"{round(amounts_start[coin], 6)}" + ' ' * start_len + f"({round(amounts_start[coin], 2)})\n"
-                message_now += f"{coin}" + ' ' * string_len + f"{round(balance['total'][coin], 6)}" + ' ' * total_len + f"({round(balance['total'][coin], 2)})\n"
+
+    def defining_session_start_balance(self):
+        database_data = self.dataBase.fetch_data_from_table('balances')
+        for record in database_data[::-1]:
+            if record[2] == self.session_id:
+                amounts_start = {'start_date': record[1],
+                                 'coins': record[3],
+                                 'balances': record[4],
+                                 'usdBalances': record[5],
+                                 'usdTotalBalance': record[6]}
                 continue
-            now_balance += balance['total'][coin] * orderbooks[coin]
-            total_start_balance += amounts_total_start[coin] * orderbooks[coin]
-            bot_start_balance += amounts_start[coin] * orderbooks[coin]
-            start_len = 11 - len(str(round(amounts_start[coin], 6)))
-            total_len = 11 - len(str(round(balance['total'][coin], 6)))
-            message_start += f"{coin}" + ' ' * string_len + f"{round(amounts_start[coin], 6)}" + ' ' * start_len + f"({round(amounts_start[coin] * orderbooks[coin], 2)})\n"
-            message_now += f"{coin}" + ' ' * string_len + f"{round(balance['total'][coin], 6)}" + ' ' * total_len + f"({round(balance['total'][coin] * orderbooks[coin], 2)})\n"
-        message_start += 8 * '- ' + ' ' + f"{round(bot_start_balance, 2)}"
-        len_now = 15 - len(f'Project: {round(bot_start_balance - total_start_balance, 2)}')
-        message_start += f'\nProject: {round(bot_start_balance - total_start_balance, 2)}' + ' ' * len_now + f'({round((bot_start_balance - total_start_balance) / total_start_balance * 100, 2)}%)'
-        message_start += f"\nProject delta: {round((now_balance - total_start_balance) - (bot_start_balance - total_start_balance), 2)}\n"
-        len_now = 15 - len(f'Project: {round(now_balance - total_start_balance, 2)}')
-        message_now += 8 * '- ' + ' ' + f"{round(now_balance, 2)}\n"
-        message_now += f'Project: {round(now_balance - total_start_balance, 2)}' + ' ' * len_now + f'({round((now_balance - total_start_balance) / total_start_balance * 100, 2)}%)\n\n'
+            else:
+                amounts_start = self.count_start_sum(amounts_start)
+                self.amounts_session_start = amounts_start
+                break
 
-        message = message_now + message_start
-        return message, now_balance, total_start_balance, bot_start_balance
+    def defining_total_start_balance(self):
+        database_data = self.dataBase.fetch_data_from_table('balances')
+        first_record = database_data[0]
+        amounts_start = {'start_date': first_record[1],
+                         'coins': first_record[3],
+                         'balances': first_record[4],
+                         'usdBalances': first_record[5],
+                         'usdTotalBalance': first_record[6]}
+        amounts_start = self.count_start_sum(amounts_start)
+        self.amounts_total_start = amounts_start
+
+
+    def check_balance(self):
+        balance = self._client.balances
+        self.dataBase.sql_balances_update(balance, self.changes, self.session_id)
+        if not self.amounts_session_start:
+            self.defining_session_start_balance()
+        if not self.amounts_total_start:
+            self.defining_total_start_balance()
+        message = self.balance_message()
+        try:
+            self.telegram_bot.send_message(self.chat_id, '<pre>' + message + '</pre>', parse_mode='HTML')
+        except:
+            pass
+        #
+        # if balancing:
+        #     blocked_coins = autobalance(coins, amounts, orderbooks, pairs)
+        # # message = find_open_orders()
+        # # final_message += message
+        # if not balancing:
+        #
+        # if balancing:
+        #     return blocked_coins
+        # else:
+        #     return [amounts, round(now_balance - total_start_balance, 2)]
+
+    def balance_message(self):
+        message_now = f'Current balance\n'
+        message_start = f'Start balance\n'
+        now_balance = 0
+        session_start_balance = self.amounts_session_start['conditTotalUsdBalance']
+        project_start_balance = self.amounts_total_start['conditTotalUsdBalance']
+        balances = self._client.balances
+        changes = self.changes
+        for balance in balances.values():
+            if balance.total_balance == '0':
+                continue
+            coin = balance.currency
+            if coin in ['USDT', 'USDC', 'DAI', 'AUDT', 'USD']:
+                precision = 0
+            else:
+                precision = 4
+            string_len = 6 - len(coin)
+            now_balance += float(balance.total_balance) * changes[coin]
+            amount_start = round(float(self.amounts_session_start[coin]), precision)
+            amount_now = round(float(balance.total_balance), precision)
+            start_len = 9 - len(str(amount_start))
+            total_len = 9 - len(str(amount_now))
+            message_start += f"{coin}" + ' ' * string_len + f"{amount_start}"
+            message_start += ' ' * start_len + f"({round(amount_start * changes[coin])})\n"
+            message_now += f"{coin}" + ' ' * string_len + f"{amount_now}"
+            message_now += ' ' * total_len + f"({round(amount_now * changes[coin])})\n"
+
+        message_now += ' ' * 15 + f"({round(now_balance)})"
+        message_start += ' ' * 15 + f"({project_start_balance})"
+        message = message_start + '\n' + message_now
+        message += f'\nProfits (USD)'
+
+        len_session = 15 - len(f'Session: {round(now_balance - session_start_balance, 2)}')
+        message += f'\nSession: {round(now_balance - session_start_balance, 2)}'
+        sess_profit_percents = round((now_balance - session_start_balance) / session_start_balance * 100, 2)
+        message += ' ' * len_session + f'({sess_profit_percents}%)\n'
+
+        len_proj = 15 - len(f"Prj chg: {round(now_balance - project_start_balance, 2)}")
+        message += f"Prj chg: {round(now_balance - project_start_balance, 2)}"
+        proj_profit_percents = round((now_balance - project_start_balance) / (project_start_balance) * 100, 2)
+        message += ' ' * len_proj + f"({round(proj_profit_percents, 2)}%)"
+        return message
 
 timex_client = timex.WsClientTimex(cp["TIMEX"]["api_key"], cp["TIMEX"]["api_secret"])
 bot = TriangleBot(timex_client)

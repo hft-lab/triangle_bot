@@ -15,6 +15,7 @@ class triangle_database:
     def sql_create_balances_table(self):
         cursor = self.connect.cursor()
         cursor.execute("""CREATE TABLE IF NOT EXISTS balances (
+        record_num INTEGER PRIMARY KEY AUTOINCREMENT,
         datetime TIMESTAMP,
         session_id TEXT,
         coins TEXT,
@@ -50,10 +51,8 @@ class triangle_database:
         '{amounts}',
         '{usd_amounts}',
         {round(total_usd_amount)})"""
-        try:
-            cursor.execute(sql)
-        except Exception as e:
-            telegram_bot.send_message(chat_id, f"DB error {e}\nData {sql}")
+        cursor.execute(sql)
+        self.connect.commit()
         cursor.close()
 
     def sql_create_orders_table(self):
