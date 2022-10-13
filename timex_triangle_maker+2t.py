@@ -50,7 +50,6 @@ class TriangleBot:
 
     start_time = time.time()
 
-
     def __init__(self, client: timex.WsClientTimex):
         self.session_id = self.id_generator(size=6)
         self._my_orders = dict[str: timex.Order]
@@ -63,6 +62,7 @@ class TriangleBot:
         for pair in self.pairs:
             self.splited_pairs.update({pair: pair.split('/')[0] + pair.split('/')[1]})
             client.subscribe_raw_order_book(self.splited_pairs[pair], self.handle_raw_order_book_update)
+
 
     def id_generator(self, size, chars=string.ascii_uppercase + string.digits):
         return ''.join(random.choice(chars) for _ in range(size))
@@ -94,6 +94,7 @@ class TriangleBot:
             changes = self.changes
             self.dataBase.sql_balances_update(balances, changes, self.session_id)
             self.check_balance()
+            self.balancing()
 
         if self._raw_updates > 199:
             if not self._raw_updates % 100:
@@ -118,7 +119,7 @@ class TriangleBot:
 
 
     def handle_create_orders(self, obj):
-        # log.info(obj)
+        log.info(obj)
         pass
 
 
@@ -131,7 +132,7 @@ class TriangleBot:
     def handle_order(self, order: timex.Order):
         self._my_orders.update({order.client_order_id: order})
         log.info(order)
-        self._client.delete_orders([order.id], self.handle_delete_orders)
+        # self._client.delete_orders([order.id], self.handle_delete_orders)
 
 
     def handle_delete_orders(self, obj):
@@ -258,8 +259,14 @@ class TriangleBot:
         btcaudt_price = self.defining_middle_spread_price(orderbooks, 'BTCAUDT')
         ethusd_price = self.defining_middle_spread_price(orderbooks, 'ETHUSD')
         ethaudt_price = self.defining_middle_spread_price(orderbooks, 'ETHAUDT')
-        change_AUDT = round((ethusd_price / ethaudt_price + btcusd_price / btcaudt_price) / 2, 3)
+        if btcusd_price and btcaudt_price and ethusd_price and ethaudt_price:
+            change_AUDT = round((ethusd_price / ethaudt_price + btcusd_price / btcaudt_price) / 2, 3)
+        if btcusd_price and btcaudt_price:
+            change_AUDT = round((btcusd_price / btcaudt_price) / 2, 3)
+        if ethusd_price and ethaudt_price:
+            change_AUDT = round((ethusd_price / ethaudt_price) / 2, 3)
         self.changes.update({'AUDT': change_AUDT})
+
 
     def changes_defining(self):
         orderbooks = self._client.raw_order_books
@@ -333,6 +340,7 @@ class TriangleBot:
             depth_count_2.append(depth_chain_2)
             depth_count_3.append(depth_chain_3)
         return depth_count_2, depth_count_3
+
 
     def triangles_count(self):
         print(f"Triangle count started")
@@ -470,6 +478,7 @@ class TriangleBot:
                 self.amounts_session_start = amounts_start
                 break
 
+
     def defining_total_start_balance(self):
         database_data = self.dataBase.fetch_data_from_table('balances')
         first_record = database_data[0]
@@ -494,26 +503,33 @@ class TriangleBot:
             self.telegram_bot.send_message(self.chat_id, '<pre>' + message + '</pre>', parse_mode='HTML')
         except:
             pass
-        #
-        # if balancing:
-        #     blocked_coins = autobalance(coins, amounts, orderbooks, pairs)
-        # # message = find_open_orders()
-        # # final_message += message
-        # if not balancing:
-        #
-        # if balancing:
-        #     return blocked_coins
-        # else:
-        #     return [amounts, round(now_balance - total_start_balance, 2)]
+
 
     def balance_message(self):
-        message_now = f'Current balance\n'
-        message_start = f'Start balance\n'
-        now_balance = 0
+        message, now_balance = self.coins_balances_message_creating()
         session_start_balance = self.amounts_session_start['conditTotalUsdBalance']
+        project_start_balance = self.amounts_total_start['conditTotalUsdBalance']
+        message += f'\nProfits (USD)'
+
+        len_session = 15 - len(f'Session: {round(now_balance - session_start_balance, 2)}')
+        message += f'\nSession: {round(now_balance - session_start_balance, 2)}'
+        sess_profit_percents = round((now_balance - session_start_balance) / session_start_balance * 100, 2)
+        message += ' ' * len_session + f'({sess_profit_percents}%)\n'
+
+        len_proj = 15 - len(f"Prj chg: {round(now_balance - project_start_balance, 2)}")
+        message += f"Prj chg: {round(now_balance - project_start_balance, 2)}"
+        proj_profit_percents = round((now_balance - project_start_balance) / (project_start_balance) * 100, 2)
+        message += ' ' * len_proj + f"({round(proj_profit_percents, 2)}%)"
+        return message
+
+
+    def coins_balances_message_creating(self):
         project_start_balance = self.amounts_total_start['conditTotalUsdBalance']
         balances = self._client.balances
         changes = self.changes
+        message_now = f'Current balance\n'
+        message_start = f'Start balance\n'
+        now_balance = 0
         for balance in balances.values():
             if balance.total_balance == '0':
                 continue
@@ -536,18 +552,109 @@ class TriangleBot:
         message_now += ' ' * 15 + f"({round(now_balance)})"
         message_start += ' ' * 15 + f"({project_start_balance})"
         message = message_start + '\n' + message_now
-        message += f'\nProfits (USD)'
+        return message, now_balance
 
-        len_session = 15 - len(f'Session: {round(now_balance - session_start_balance, 2)}')
-        message += f'\nSession: {round(now_balance - session_start_balance, 2)}'
-        sess_profit_percents = round((now_balance - session_start_balance) / session_start_balance * 100, 2)
-        message += ' ' * len_session + f'({sess_profit_percents}%)\n'
 
-        len_proj = 15 - len(f"Prj chg: {round(now_balance - project_start_balance, 2)}")
-        message += f"Prj chg: {round(now_balance - project_start_balance, 2)}"
-        proj_profit_percents = round((now_balance - project_start_balance) / (project_start_balance) * 100, 2)
-        message += ' ' * len_proj + f"({round(proj_profit_percents, 2)}%)"
-        return message
+    def defining_average_balance(self):
+        balances = self._client.balances
+        changes = self.changes
+        total_usd_value = 0
+        coins = []
+        amounts = []
+        for balance in balances.values():
+            if balance.total_balance != '0':
+                coins.append(balance.currency)
+                amounts.append(float(balance.total_balance) * changes[balance.currency])
+                total_usd_value += float(balance.total_balance) * changes[balance.currency]
+        average_balance = total_usd_value / len(coins)
+        amounts = map(lambda x: x - average_balance, amounts)
+        coins = dict(zip(coins, amounts))
+        return average_balance, coins
+
+
+    def balancing(self):
+        average_balance, coins = self.defining_average_balance()
+        orderbooks = self._client.raw_order_books
+        pairs = set(self.markets)
+        changes = self.changes
+        balancing_orders = []
+        for first_coin, first_amount in coins.items():
+            for second_coin, second_amount in coins.items():
+                if first_coin == second_coin:
+                    continue
+                if average_balance * 0.03 > abs(first_amount) or average_balance * 0.03 > abs(second_amount):
+                    continue
+                balance_pair = None
+                if first_amount > 0 and second_amount < 0 or first_amount < 0 and second_amount > 0:
+                    for pair in pairs:
+                        if first_coin in pair.split('/') and second_coin in pair.split('/'):
+                            balance_pair = pair
+                            break
+                    if not balance_pair:
+                        continue
+                    if first_amount > 0:
+                        sell_coin, buy_coin, sell_amount, buy_amount = first_coin, second_coin, first_amount, second_amount
+                    else:
+                        sell_coin, buy_coin, sell_amount, buy_amount = second_coin, first_coin, second_amount, first_amount
+                    balancing_amount_usd = abs(buy_amount) if abs(buy_amount) < abs(sell_amount) else abs(sell_amount)
+                    coins[sell_coin] -= balancing_amount_usd
+                    coins[buy_coin] += balancing_amount_usd
+                    if sell_coin == balance_pair.split('/')[0]:
+                        side, side_4_order = 'sell', timex.ORDER_SIDE_SELL
+                    else:
+                        side, side_4_order = 'buy', timex.ORDER_SIDE_BUY
+                    balance_orderbook = orderbooks[self.splited_pairs[balance_pair]]
+                    balancing_amount = balancing_amount_usd / changes[balance_pair.split('/')[0]]
+                    ticksize = self.markets[balance_pair]['precision']['price']
+                    price = (balance_orderbook.bids[0].price + balance_orderbook.asks[0].price) / 2
+                    price = price - (price % ticksize)
+                    print(f"Balance pair: {balance_pair}\nSide: {side}\nPrice: {price}")
+                    print(f"Sell coin: {sell_coin}\nBuy coin: {buy_coin}\nAmount, USD: {balancing_amount_usd}")
+                    balancing_orders.append(
+                        timex.NewOrder(
+                            price=price,
+                            quantity=balancing_amount,
+                            side=side_4_order,
+                            type=timex.ORDER_TYPE_LIMIT,
+                            symbol=self.splited_pairs[balance_pair],
+                            expire_in_seconds=100,
+                            client_order_id=f'Balancing {sell_coin}->{buy_coin}',
+                        ))
+        self._client.create_orders(balancing_orders, self.handle_create_orders)
+                    # place_order({'pair': balance_pair, 'side': side, 'amount': balancing_amount, 'price': price})
+                    # if side == 'sell':
+                    #     blocked_coins.append({'coin': balance_pair.split('/')[0], 'amount': balancing_amount * orderbooks[balance_pair.split('/')[0]], 'pair': balance_pair, 'side': side})
+                    # else:
+                    #     blocked_coins.append({'coin': balance_pair.split('/')[1], 'amount': balancing_amount * orderbooks[balance_pair.split('/')[0]], 'pair': balance_pair, 'side': side})
+                    # try:
+                    #     telegram_bot.send_message(chat_id, f"Balancing order placed:\nPair: {balance_pair} | Side: {side}\nAmount: {round(balancing_amount, 8)} {balance_pair.split('/')[0]}\nAsset amount {round(balancing_amount * balance_orderbook['asks'][0][0], 8)} {balance_pair.split('/')[1]}\nUSDN order amount: {round(balancing_amount * orderbooks[balance_pair.split('/')[0]], 2)}\nOrder price: {price}")
+                    # except:
+                    #     telegram_bot.send_message(chat_id, f"Balancing order placed:\nPair: {balance_pair} | Side: {side}\nAmount: {round(balancing_amount, 8)} {balance_pair.split('/')[0]}\nAsset amount {round(balancing_amount * balance_orderbook['asks'][0][0], 8)} {balance_pair.split('/')[1]}\nUSDN order amount: {round(balancing_amount * orderbooks[balance_pair.split('/')[0]], 2)}\nOrder price: {price}")
+                    # blocked_coins = balancing(pairs, coins, orderbooks, average_balance, blocked_coins)
+                    # return blocked_coins
+
+
+    # def autobalance(coins, amounts, orderbooks, pairs):
+    #     average_balance = 0
+    #     amounts_diffs = {}
+    #     for coin in coins:
+    #         average_balance += amounts[coin] * orderbooks[coin]
+    #     average_balance = average_balance / len(coins)
+    #     for coin in coins:
+    #         amounts_diffs.update({coin: amounts[coin] * orderbooks[coin] - average_balance})
+    #     orders = fetch_open_orders()
+    #     orders = cancel_balancing(orders)
+    #     # for order in orders:
+    #     #     if order['side'] == 'buy':
+    #     #         amounts_diffs[order['symbol'].split('/')[0]] += order['remaining'] * orderbooks[order['symbol'].split('/')[0]]
+    #     #         amounts_diffs[order['symbol'].split('/')[1]] -= order['remaining'] * orderbooks[order['symbol'].split('/')[1]]
+    #     #     else:
+    #     #         amounts_diffs[order['symbol'].split('/')[0]] -= order['remaining'] * orderbooks[order['symbol'].split('/')[0]]
+    #     #         amounts_diffs[order['symbol'].split('/')[1]] += order['remaining'] * orderbooks[order['symbol'].split('/')[1]]
+    #     blocked_coins = []
+    #     blocked_coins = balancing(pairs, amounts_diffs, orderbooks, average_balance, blocked_coins)
+    #     return blocked_coins
+
 
 timex_client = timex.WsClientTimex(cp["TIMEX"]["api_key"], cp["TIMEX"]["api_secret"])
 bot = TriangleBot(timex_client)
