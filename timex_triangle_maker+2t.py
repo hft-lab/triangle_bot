@@ -10,6 +10,7 @@ import telebot
 from DataBase import triangle_database
 import random
 import string
+import re
 
 import py_timex.client as timex
 
@@ -52,9 +53,9 @@ class TriangleBot:
 
     def __init__(self, client: timex.WsClientTimex):
         self.session_id = self.id_generator(size=6)
-        self._my_orders = dict[str: timex.Order]
+        self._my_orders = dict[str: timex.Order]()
         self._client = client
-        self.depth = 5
+        self.depth = 3
         client.on_first_connect = self.on_first_connect
         client.subscribe_balances(self.handle_balance)
         client.subscribe_orders(self.handle_order)
@@ -98,10 +99,18 @@ class TriangleBot:
 
         if self._raw_updates > 199:
             if not self._raw_updates % 100:
+                print(f"Orders in base:\n")
+                try:
+                    for order in self._my_orders.values():
+                        if order.status == 'CANCELLED':
+                            self._my_orders.pop(order.client_order_id)
+                            print(f"Order deleted from base:\n {order}")
+                except:
+                    pass
                 self.find_all_triangles()
             if not self._raw_updates % 5:
                 self.triangles_count()
-                print(f"Triangle count ended")
+                # print(f"Triangle count ended")
             # print(f"Total updates: {self._raw_updates}\nTime since started: {time.time() - self.start_time}")
 
 
@@ -119,6 +128,7 @@ class TriangleBot:
 
 
     def handle_create_orders(self, obj):
+        print(f"ORDER CREATED:\n{obj}")
         log.info(obj)
         pass
 
@@ -130,13 +140,16 @@ class TriangleBot:
 
 
     def handle_order(self, order: timex.Order):
+        print(f"Line 137:\n")
+        print({order.client_order_id: order})
         self._my_orders.update({order.client_order_id: order})
-        log.info(order)
-        # self._client.delete_orders([order.id], self.handle_delete_orders)
+        # log.info(order)
+        self._client.delete_orders([order.id], self.handle_delete_orders)
 
 
     def handle_delete_orders(self, obj):
-        log.info(obj)
+        print(f"ORDER DELETED:\n{obj}")
+        # log.info(obj)
 
 
     def run(self):
@@ -276,11 +289,18 @@ class TriangleBot:
                 continue
             if coin == 'AUDT':
                 pass
-            for x in ['USDT', 'USD', 'USDC']:
+            for x in ['USDT', 'USD', 'USDC', 'AUDT']:
                 try:
-                    change = self.defining_middle_spread_price(orderbooks, coin + x)
-                    self.changes.update({coin: change})
-                    break
+                    if x != 'AUDT':
+                        change = self.defining_middle_spread_price(orderbooks, coin + x)
+                        if change:
+                            self.changes.update({coin: change})
+                            break
+                    else:
+                        change = self.defining_middle_spread_price(orderbooks, coin + x)
+                        if change:
+                            change = change / self.changes['AUDT']
+                            self.changes.update({coin: change})
                 except:
                     pass
 
@@ -319,6 +339,8 @@ class TriangleBot:
 
 
     def defining_depth_counts(self, coins_chain):
+        # print(self._my_orders)
+        #     print(order_data)
         # counting into deep of liquidity
         depth_count_2 = []
         depth_count_3 = []
@@ -330,6 +352,8 @@ class TriangleBot:
                              'price': price2,
                              'amount': amount2,
                              'usdAmount': usdAmount2}
+            depth_count_2.append(depth_chain_2)
+        for position in range(self.depth):
             amount3 = sum([coins_chain['coin_3']['orderbook'][x].volume for x in range(position + 1)])
             usdAmount3 = amount3 * self.changes[coins_chain['coin_3']['pair'].split('/')[0]]
             price3 = coins_chain['coin_3']['orderbook'][position].price
@@ -337,13 +361,12 @@ class TriangleBot:
                              'price': price3,
                              'amount': amount3,
                              'usdAmount': usdAmount3}
-            depth_count_2.append(depth_chain_2)
             depth_count_3.append(depth_chain_3)
         return depth_count_2, depth_count_3
 
 
     def triangles_count(self):
-        print(f"Triangle count started")
+        # print(f"Triangle count started")
         time_start = time.time()
         orderbooks = self._client.raw_order_books
         self.changes_defining()
@@ -447,8 +470,8 @@ class TriangleBot:
                                         'price': coin_3['price'],
                                         "depth": coin_3['depth']}]
                         triangles.append([order_chain, profit_abs])
-        print(f"Full time: {time.time() - time_start}")
-        print(f'Total triangles found: {len(triangles)}')
+        # print(f"Full time: {time.time() - time_start}")
+        # print(f'Total triangles found: {len(triangles)}')
 
 
     def count_start_sum(self, amounts_start):
@@ -564,15 +587,29 @@ class TriangleBot:
         for balance in balances.values():
             if balance.total_balance != '0':
                 coins.append(balance.currency)
-                amounts.append(float(balance.total_balance) * changes[balance.currency])
+                free_balance = float(balance.total_balance) - float(balance.locked_balance)
+                amounts.append({'disbal': float(balance.total_balance) * changes[balance.currency],
+                                'free': (free_balance) * changes[balance.currency]
+                                })
+
                 total_usd_value += float(balance.total_balance) * changes[balance.currency]
         average_balance = total_usd_value / len(coins)
-        amounts = map(lambda x: x - average_balance, amounts)
+        for amount in amounts:
+            amount['disbal'] = amount['disbal'] - average_balance
+        # amounts = map(lambda x: x - average_balance, amounts)
         coins = dict(zip(coins, amounts))
         return average_balance, coins
 
+    def return_string_price(self, price):
+        if 'e-' in str(price):
+            parts = str(price).split('e-')
+            string_price = '0.' + int(float(parts[1]) - 1) * '0' + parts[1]
+            return string_price
+        else:
+            return str(price)
 
     def balancing(self):
+        print(f'balancing started')
         average_balance, coins = self.defining_average_balance()
         orderbooks = self._client.raw_order_books
         pairs = set(self.markets)
@@ -582,36 +619,60 @@ class TriangleBot:
             for second_coin, second_amount in coins.items():
                 if first_coin == second_coin:
                     continue
-                if average_balance * 0.03 > abs(first_amount) or average_balance * 0.03 > abs(second_amount):
+#    if abs(first_amount['disbal']) < 40 and abs(second_amount['total']) < 40:
+#       TypeError: 'float' object is not subscriptable
+                if abs(first_amount['disbal']) < 40 and abs(second_amount['disbal']) < 40:
                     continue
                 balance_pair = None
-                if first_amount > 0 and second_amount < 0 or first_amount < 0 and second_amount > 0:
+                if first_amount['disbal'] > 0 and second_amount['disbal'] < 0 or first_amount['disbal'] < 0 and second_amount['disbal'] > 0:
                     for pair in pairs:
                         if first_coin in pair.split('/') and second_coin in pair.split('/'):
                             balance_pair = pair
                             break
                     if not balance_pair:
                         continue
-                    if first_amount > 0:
-                        sell_coin, buy_coin, sell_amount, buy_amount = first_coin, second_coin, first_amount, second_amount
+                    if first_amount['disbal'] > 0:
+                        sell_coin, buy_coin = first_coin, second_coin
+                        sell_amount, buy_amount = first_amount['disbal'], second_amount['disbal']
+                        available_amount = first_amount['free']
                     else:
-                        sell_coin, buy_coin, sell_amount, buy_amount = second_coin, first_coin, second_amount, first_amount
-                    balancing_amount_usd = abs(buy_amount) if abs(buy_amount) < abs(sell_amount) else abs(sell_amount)
-                    coins[sell_coin] -= balancing_amount_usd
-                    coins[buy_coin] += balancing_amount_usd
+                        sell_coin, buy_coin = second_coin, first_coin
+                        sell_amount, buy_amount = second_amount['disbal'], first_amount['disbal']
+                        available_amount = second_amount['free']
+                    balancing_amount = abs(buy_amount) if abs(buy_amount) < abs(sell_amount) else abs(sell_amount)
+                    coins[sell_coin]['disbal'] -= balancing_amount
+                    coins[buy_coin]['disbal'] += balancing_amount
                     if sell_coin == balance_pair.split('/')[0]:
                         side, side_4_order = 'sell', timex.ORDER_SIDE_SELL
                     else:
                         side, side_4_order = 'buy', timex.ORDER_SIDE_BUY
                     balance_orderbook = orderbooks[self.splited_pairs[balance_pair]]
-                    balancing_amount = balancing_amount_usd / changes[balance_pair.split('/')[0]]
+                    balancing_amount = balancing_amount if balancing_amount < available_amount else available_amount * 0.95
+                    balancing_amount = balancing_amount / changes[balance_pair.split('/')[0]]
                     ticksize = self.markets[balance_pair]['precision']['price']
+                    if ticksize < 1:
+                        ticksize_len = len(self.return_string_price(ticksize).split('.')[1])
+                    else:
+                        ticksize_len = 0
+                    stepsize = self.markets[balance_pair]['precision']['amount']
+                    if stepsize < 1:
+                        stepsize_len = len(self.return_string_price(stepsize).split('.')[1])
+                    else:
+                        stepsize_len = 0
                     price = (balance_orderbook.bids[0].price + balance_orderbook.asks[0].price) / 2
-                    price = price - (price % ticksize)
-                    print(f"Balance pair: {balance_pair}\nSide: {side}\nPrice: {price}")
-                    print(f"Sell coin: {sell_coin}\nBuy coin: {buy_coin}\nAmount, USD: {balancing_amount_usd}")
+                    price = round(price - (price % ticksize), ticksize_len)
+                    balancing_amount = round(balancing_amount - (balancing_amount % stepsize), stepsize_len)
                     balancing_orders.append(
                         timex.NewOrder(
+                            price=price,
+                            quantity=balancing_amount,
+                            side=side_4_order,
+                            type=timex.ORDER_TYPE_LIMIT,
+                            symbol=self.splited_pairs[balance_pair],
+                            expire_in_seconds=100,
+                            client_order_id=f'Balancing {sell_coin}->{buy_coin}',
+                        ))
+                    print(timex.NewOrder(
                             price=price,
                             quantity=balancing_amount,
                             side=side_4_order,
