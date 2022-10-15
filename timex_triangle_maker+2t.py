@@ -56,6 +56,8 @@ class TriangleBot:
         self._my_orders = dict[str: timex.Order]()
         self._client = client
         self.depth = 3
+        self.existing_triangles = []
+        self.new_triangles = []
         client.on_first_connect = self.on_first_connect
         client.subscribe_balances(self.handle_balance)
         client.subscribe_orders(self.handle_order)
@@ -95,6 +97,8 @@ class TriangleBot:
             changes = self.changes
             self.dataBase.sql_balances_update(balances, changes, self.session_id)
             self.check_balance()
+
+        if not self._raw_updates % 3000:
             self.balancing()
 
         if self._raw_updates > 199:
@@ -140,8 +144,9 @@ class TriangleBot:
 
 
     def handle_order(self, order: timex.Order):
-        print(f"Line 137:\n")
+        print(f"Line 137:")
         print({order.client_order_id: order})
+        print()
         self._my_orders.update({order.client_order_id: order})
         # log.info(order)
         self._client.delete_orders([order.id], self.handle_delete_orders)
@@ -337,26 +342,47 @@ class TriangleBot:
                                                      'orderbook': orderbook}})
         return coins_chain
 
+    #TESTS REQUIRED
+    def block_liq_define(self, coins_chain):
+        orders_2_pair = []
+        orders_3_pair = []
+        pair_2 = self.splited_pairs[coins_chain['coin_2']['pair']]
+        pair_3 = self.splited_pairs[coins_chain['coin_3']['pair']]
+        orders = self._my_orders
+        for order in orders.values():
+            if "Balancing" in order.client_order_id:
+                continue
+            if order.symbol == pair_2:
+                orders_2_pair.append(order.price)
+            elif order.symbol == pair_3:
+                orders_3_pair.append(order.price)
+        return orders_2_pair, orders_3_pair
 
+    #TESTS REQUIRED
     def defining_depth_counts(self, coins_chain):
         # print(self._my_orders)
         #     print(order_data)
         # counting into deep of liquidity
+        orders_2_pair, orders_3_pair = self.block_liq_define(coins_chain)
         depth_count_2 = []
         depth_count_3 = []
         for position in range(self.depth):
+            price2 = coins_chain['coin_2']['orderbook'][position].price
+            if str(price2) in orders_2_pair:
+                continue
             amount2 = sum([coins_chain['coin_2']['orderbook'][x].volume for x in range(position + 1)])
             usdAmount2 = amount2 * self.changes[coins_chain['coin_2']['pair'].split('/')[0]]
-            price2 = coins_chain['coin_2']['orderbook'][position].price
             depth_chain_2 = {'depth': position,
                              'price': price2,
                              'amount': amount2,
                              'usdAmount': usdAmount2}
             depth_count_2.append(depth_chain_2)
         for position in range(self.depth):
+            price3 = coins_chain['coin_3']['orderbook'][position].price
+            if str(price3) in orders_3_pair:
+                continue
             amount3 = sum([coins_chain['coin_3']['orderbook'][x].volume for x in range(position + 1)])
             usdAmount3 = amount3 * self.changes[coins_chain['coin_3']['pair'].split('/')[0]]
-            price3 = coins_chain['coin_3']['orderbook'][position].price
             depth_chain_3 = {'depth': position,
                              'price': price3,
                              'amount': amount3,
@@ -470,8 +496,23 @@ class TriangleBot:
                                         'price': coin_3['price'],
                                         "depth": coin_3['depth']}]
                         triangles.append([order_chain, profit_abs])
-        # print(f"Full time: {time.time() - time_start}")
-        # print(f'Total triangles found: {len(triangles)}')
+        print(f"Full time: {time.time() - time_start}")
+        print(f'Total triangles found: {len(triangles)}')
+        return triangles
+
+    #TESTS REQUIRED
+    def choosing_triangles(self):
+        chosen_triangles = {}
+        triangles = self.triangles_count()
+        for triangle in triangles:
+            if chosen_triangles.get(triangle[0]['pair']):
+                if chosen_triangles[triangle[0]['pair']].get(triangle[0]['side']):
+                    if triangle[1] > chosen_triangles[triangle[0]['pair']][triangle[0]['side']][1]:
+                        chosen_triangles[triangle[0]['pair']][triangle[0]['side']] = triangle
+                else:
+                    chosen_triangles[triangle[0]['pair']][triangle[0]['side']] = triangle
+            else:
+                chosen_triangles[triangle[0]['pair']][triangle[0]['side']] = triangle
 
 
     def count_start_sum(self, amounts_start):
@@ -608,7 +649,17 @@ class TriangleBot:
         else:
             return str(price)
 
+    def cancel_all_balancing_orders(self):
+        orders_for_cancel = []
+        for order in self._my_orders.values():
+            if 'Balancing' in order.client_order_id:
+                orders_for_cancel.append(order.id)
+        if len(orders_for_cancel):
+            self._client.delete_orders(orders_for_cancel, self.handle_delete_orders)
+
+    #TESTS REQUIRED
     def balancing(self):
+        self.cancel_all_balancing_orders()
         print(f'balancing started')
         average_balance, coins = self.defining_average_balance()
         orderbooks = self._client.raw_order_books
