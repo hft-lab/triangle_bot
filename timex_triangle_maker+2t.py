@@ -48,7 +48,7 @@ class TriangleBot:
     coins = []
 
     profit = 0.001
-    fee = 0.008
+    fee = 0.001
     changes = {'USD': 1, 'USDT': 1, 'USDC': 1}
     amounts_session_start = None
     amounts_total_start = None
@@ -144,11 +144,10 @@ class TriangleBot:
         pass
 
     def find_triangle(self, order):
-        if self.existing_triangles.get(order.symbol):
-            if self.existing_triangles[order.symbol].get(order.side):
-                balancing_triangle = self.existing_triangles[order.symbol][order.side]
-                self.existing_triangles[order.symbol].pop(order.side)
-                return balancing_triangle
+        if self.existing_triangles.get(order.client_order_id):
+            balancing_triangle = self.existing_triangles[order.client_order_id]
+            self.existing_triangles.pop(order.client_order_id)
+            return balancing_triangle
         return None
 
     def handle_order(self, order: timex.Order):
@@ -192,13 +191,14 @@ class TriangleBot:
 
 
     def handle_delete_orders(self, obj):
-        # print(f"ORDER DELETED. Line 178:\n{obj}")
-        # print()
         if obj['responseBody'].get('changedOrders'):
             for cancelled_order in obj['responseBody']['changedOrders']:
                 client_id = cancelled_order['newOrder']['clientOrderId']
+                if self.existing_triangles.get(client_id):
+                    self.existing_triangles.pop(client_id)
                 if self._my_orders.get(client_id):
                     self._my_orders.pop(client_id)
+                print(f"Deleted order: {client_id}")
                     # print(f"Order deleted from base:\n {cancelled_order}")
         # log.info(obj)
 
@@ -544,7 +544,7 @@ class TriangleBot:
                         ask_price = orderbooks[splited_main_pair].asks[0].price
                         bid_price = orderbooks[splited_main_pair].bids[0].price
                         spread = (ask_price - bid_price) / bid_price * 100
-                        position = (ask_price - main_price) / (ask_price - bid_price) * 100
+                        position = ((ask_price - main_price) / (ask_price - bid_price)) * 100
                         if position < 0:
                             continue
                     else:
@@ -552,7 +552,7 @@ class TriangleBot:
                         ask_price = orderbooks[splited_main_pair].asks[0].price
                         bid_price = orderbooks[splited_main_pair].bids[0].price
                         spread = (ask_price - bid_price) / ask_price * 100
-                        position = (main_price - bid_price) / (ask_price - bid_price) * 100
+                        position = ((main_price - bid_price) / (ask_price - bid_price)) * 100
                         if position < 0:
                             continue
                     profit_abs = (end_amount - initial_amount) * self.changes[coins_chain['coin_1']['coin']]
@@ -590,7 +590,7 @@ class TriangleBot:
                                     "depth": coin_3['depth'],
                                     'extra': coins_chain['coin_3']['extra']}]
                     triangles.append(order_chain)
-                    # print(order_chain)
+                    # print(order_chain[0]['position'])
                     # print()
                         # print(f"{order_chain[0]['pair']} -> {order_chain[1]['pair']} -> {order_chain[2]['pair']}")
                         # print(f"{round(order_chain[0]['position'], 5)} -> {order_chain[1]['depth']} -> {order_chain[2]['depth']}")
@@ -598,7 +598,8 @@ class TriangleBot:
                         # print()
         # print(f"Full time: {time.time() - time_start}")
         # print(f"Cycles: {counter}")
-        # print(f'Total triangles found: {len(triangles)}')
+        print(f'Total triangles found: {len(triangles)}')
+        print()
         return triangles
 
     def choosing_triangles(self):
@@ -606,65 +607,68 @@ class TriangleBot:
         try:
             triangles = self.triangles_count()
         except:
-            # print(e)
             return
         for triangle in triangles:
-            pair = triangle[0]['pair']
-            side = triangle[0]['side']
-            if chosen_triangles.get(pair):
-                if chosen_triangles[pair].get(side):
-                    if triangle[0]['position'] > chosen_triangles[pair][side][0]['position'] :
-                        chosen_triangles[pair][side] = triangle
-                else:
-                    chosen_triangles[pair].update({side: triangle})
+            side_pair = triangle[0]['side'] + ' ' + triangle[0]['pair']
+            if chosen_triangles.get(side_pair):
+                if triangle[0]['position'] > chosen_triangles[side_pair][0]['position']:
+                    chosen_triangles[side_pair] = triangle
             else:
-                chosen_triangles.update({pair: {side: triangle}})
+                chosen_triangles.update({side_pair: triangle})
         return chosen_triangles
 
-    #TODO tests
+
     def change_existing_orders(self):
         chosen_triangles = self.choosing_triangles()
         orders = self._my_orders
         orders_to_cancel = []
-        if not chosen_triangles:
-            if len(orders):
-                for order in orders.values():
-                    orders_to_cancel.append(order.id)
-                self._client.delete_orders(orders_to_cancel, self.handle_delete_orders)
-            return
+        delete_orders = []
+        found_orders = []
         new_orders = []
-        pairs_sides = []
-        if not len(orders):
-            for sides in chosen_triangles.values():
-                for triangle in sides.values():
-                    triangle[0]['timestamp'] = time.time()
-                    self.existing_triangles.update({self.splited_pairs[triangle[0]['pair']]:
-                                                        {triangle[0]['side']: triangle}})
-                    new_orders.append(self.create_order_data(triangle[0]))
-        else:
-            for pair, sides in chosen_triangles.items():
-                for side, triangle in sides.items():
-                    pairs_sides.append(self.splited_pairs[pair] + side)
-                    for order in orders.values():
-                        if side in order.client_order_id and pair in order.client_order_id:
-                            define_best_order = self.define_best_order(triangle[0], order)
-                            if define_best_order == 'triangle':
-                                orders_to_cancel.append(order.id)
-                                triangle[0]['timestamp'] = time.time()
-                                self.existing_triangles.update({self.splited_pairs[triangle[0]['pair']]:
-                                                                    {triangle[0]['side']: triangle}})
-                                new_orders.append(self.create_order_data(triangle[0]))
-                                # self._client.create_orders([self.create_order_data(triangle[0][0])], self.handle_create_orders)
-
-            for order in orders.values():
-                if not order.symbol + order.side in pairs_sides:
+        try:
+            orders_to_compare = set(orders).intersection(chosen_triangles)
+            for order_id in orders_to_compare:
+                triangle = chosen_triangles[order_id]
+                order = orders[order_id]
+                best_option = self.define_best_order(triangle, order)
+                if best_option == 'triangle':
                     orders_to_cancel.append(order.id)
+                    triangle[0]['timestamp'] = time.time()
+                    self.existing_triangles.update({order_id: triangle})
+                    new_orders.append(self.create_order_data(triangle[0]))
+
+                    found_orders.append(triangle[0]['side'] + ' ' + triangle[0]['pair'])  # TEST
+                    delete_orders.append(order.client_order_id)  # TEST
+        except:
+            pass
+
+        orders_to_delete = set(orders) - set(chosen_triangles)
+        for order_id in orders_to_delete:
+            orders_to_cancel.append(orders[order_id].id)
+
+            delete_orders.append(orders[order_id].client_order_id) #TEST
+
+        orders_to_create = set(chosen_triangles) - set(orders)
+        for order_id in orders_to_create:
+            triangle = chosen_triangles[order_id]
+            triangle[0]['timestamp'] = time.time()
+            self.existing_triangles.update({order_id: triangle})
+            new_orders.append(self.create_order_data(triangle[0]))
+
+            found_orders.append(triangle[0]['side'] + ' ' + triangle[0]['pair'])  # TEST
+
+        print(f"New triangles: {set(chosen_triangles)}")
+        print(f"Existed orders: {set(orders)}")
+        print(f"Deleted orders: {delete_orders}")
+        print(f"New orders: {found_orders}")
+        print()
         if len(orders_to_cancel):
             self._client.delete_orders(orders_to_cancel, self.handle_delete_orders)
         if len(new_orders):
-            # print(f"New orders:\n{new_orders}")
-            # print()
             self._client.create_orders(new_orders, self.handle_create_orders)
+
+
+
 
 
 
@@ -688,6 +692,7 @@ class TriangleBot:
     #TODO tests
     def define_best_order(self, triangle, order):
         orderbooks = self._client.raw_order_books
+        side_pair = triangle[0]['side'] + ' ' + triangle[0]['pair']
         triangle_amount = triangle[0]['amount'] + triangle[0]['extra']
         triangle_amount = self.amount_precision(triangle_amount, triangle[0]['pair'])
         triangle_price = self.price_precision(triangle[0]['price'], triangle[0]['pair'])
@@ -703,11 +708,8 @@ class TriangleBot:
         else:
             if float(order.price) > orderbooks[order.symbol].asks[0].price or float(order.price) > triangle_price:
                 return 'triangle'
-        if self.existing_triangles.get(order.symbol):
-            if self.existing_triangles[order.symbol].get(order.side):
-                balancing_triangle = self.existing_triangles[order.symbol][order.side]
-            else:
-                return 'triangle'
+        if self.existing_triangles.get(side_pair):
+            balancing_triangle = self.existing_triangles[side_pair]
         else:
             return 'triangle'
         return self.find_2_3_liquidity(balancing_triangle)
@@ -715,16 +717,16 @@ class TriangleBot:
     #TODO tests
     def find_2_3_liquidity(self, balancing_triangle):
         orderbooks = self._client.raw_order_books
-        pair_2 = balancing_triangle[0][1]['pair']
-        price_2 = self.price_precision(balancing_triangle[0][1]['price'], pair_2)
-        side_2 = balancing_triangle[0][1]['side']
-        amount_2 = balancing_triangle[0][1]['amount']
+        pair_2 = balancing_triangle[1]['pair']
+        price_2 = self.price_precision(balancing_triangle[1]['price'], pair_2)
+        side_2 = balancing_triangle[1]['side']
+        amount_2 = balancing_triangle[1]['amount']
         pair_2 = self.splited_pairs[pair_2]
         orderbook_2 = orderbooks[pair_2].asks if side_2 == 'BUY' else orderbooks[pair_2].bids
-        pair_3 = balancing_triangle[0][2]['pair']
-        price_3 = self.price_precision(balancing_triangle[0][2]['price'], pair_3)
-        side_3 = balancing_triangle[0][2]['side']
-        amount_3 = balancing_triangle[0][2]['amount']
+        pair_3 = balancing_triangle[2]['pair']
+        price_3 = self.price_precision(balancing_triangle[2]['price'], pair_3)
+        side_3 = balancing_triangle[2]['side']
+        amount_3 = balancing_triangle[2]['amount']
         pair_3 = self.splited_pairs[pair_3]
         orderbook_3 = orderbooks[pair_3].asks if side_3 == 'BUY' else orderbooks[pair_3].bids
         real_liquid_2 = 0
